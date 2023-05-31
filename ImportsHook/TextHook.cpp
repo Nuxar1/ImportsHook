@@ -198,8 +198,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 
 				RtlCopyMemory((PVOID)(address + Offset), jmp_far, sizeof(jmp_far));
 				Offset += sizeof(jmp_far);
-
-				__debugbreak();
 				break;
 			}
 			case ZYDIS_CATEGORY_COND_BR:
@@ -219,11 +217,12 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 
 
 				ZydisEncoderRequest jcc_do_jump;
+				RtlFillMemory(&jcc_do_jump, sizeof(jcc_do_jump), 0);
 				jcc_do_jump.machine_mode = instruction.machine_mode;
 				jcc_do_jump.mnemonic = instruction.mnemonic;
 				jcc_do_jump.operand_count = 1;
 				jcc_do_jump.operands[0].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
-				jcc_do_jump.operands[0].imm.s = sizeof(jmp_far) + 2; // 2 = length of jmp NO_JUMP instruction. This is double checked in the code below.
+				jcc_do_jump.operands[0].imm.s = sizeof(jmp_far) + sizeof(jmp_no_jump);
 				ZyanUSize encoded_length = ZYDIS_MAX_INSTRUCTION_LENGTH;
 				ZydisEncoderEncodeInstruction(&jcc_do_jump, (PVOID)(address + Offset), &encoded_length); // jcc DO_JUMP
 				Offset += (ULONG)encoded_length;
@@ -243,6 +242,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 				*(ULONG_PTR*)(&jmp_far[6]) = target;
 
 				RtlCopyMemory((PVOID)(address + Offset), jmp_far, sizeof(jmp_far));
+				Offset += sizeof(jmp_far);
 
 				break;
 			}
@@ -256,9 +256,10 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 					if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_RIP) {
 						ULONG_PTR memoryTarget = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operand.mem.displacement;
 
-						operand.mem.displacement = memoryTarget - (address + Offset + instruction.length);
+						operand.mem.base = ZYDIS_REGISTER_NONE;
+						operand.mem.displacement = memoryTarget;
 
-						Log("TextHook: Fixup relative address at %p from 0x%x to 0x%x (target: %p)\n", address, pInstruction[i].m_Operands[j].mem.disp.value, operand.mem.displacement, memoryTarget);
+						Log("TextHook: Fixup relative address at %p from 0x%x to %p)\n", address, pInstruction[i].m_Operands[j].mem.disp.value, memoryTarget);
 					}
 				}
 
@@ -267,7 +268,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 				if (ZYAN_FAILED(ZydisEncoderEncodeInstruction(&req, encoded_instruction, &encoded_length)))
 				{
 					Log("TextHook: Failed to encode instruction.\n");
-					__debugbreak();
 					return 0;
 				}
 				RtlCopyMemory((PVOID)(address + Offset), encoded_instruction, encoded_length);

@@ -71,11 +71,13 @@
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
     <IncludePath>C:\Program Files %28x86%29\ZydisKernel\include;$(IncludePath);$(KMDF_INC_PATH)$(KMDF_VER_PATH)</IncludePath>
     <LibraryPath>C:\Program Files %28x86%29\ZydisKernel\lib;$(LibraryPath)</LibraryPath>
+    <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
     <LibraryPath>C:\Program Files %28x86%29\ZydisKernel\lib;$(LibraryPath)</LibraryPath>
     <IncludePath>C:\Program Files %28x86%29\ZydisKernel\include;$(IncludePath);$(KMDF_INC_PATH)$(KMDF_VER_PATH)</IncludePath>
+    <Inf2CatUseLocalTime>true</Inf2CatUseLocalTime>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>

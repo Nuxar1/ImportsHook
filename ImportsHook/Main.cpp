@@ -8,8 +8,8 @@ inline void* __CRTDECL operator new(size_t, void* _P) noexcept
 TextHook* io_hook = nullptr;
 
 
-void Callback(const wchar_t* str) {
-	Log("Callback: %ws\n", str);
+void Callback() {
+	Log("IofCompleteRequest: %p\n", _ReturnAddress());
 }
 
 NTSTATUS DriverEntry(
@@ -27,7 +27,7 @@ NTSTATUS DriverEntry(
 	}
 
 	// call the constructor
-	new (io_hook) TextHook(RTL_CONSTANT_STRING(L"NtAddAtom"), (PVOID)Callback);
+	new (io_hook) TextHook(RTL_CONSTANT_STRING(L"IofCompleteRequest"), (PVOID)Callback);
 
 	return STATUS_SUCCESS;
 }
