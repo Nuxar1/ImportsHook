@@ -9,8 +9,15 @@ NTSTATUS DriverEntry(
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNREFERENCED_PARAMETER(RegistryPath);
 
-	TextHook getPhysAddrHook(RTL_CONSTANT_STRING(L"MmGetPhysicalAddress"), (PVOID)static_cast<void(*)()>([]() { DbgPrintEx(0, 0, "MmGetPhysicalAddress called"); }));
+	TextHook getPhysAddrHook(RTL_CONSTANT_STRING(L"IofCompleteRequest"), (PVOID)static_cast<void(*)()>([]() { Log("IofCompleteRequest called from %p\n", _ReturnAddress()); }));
 
+	Log(0, 0, "ImportsHook loaded\n");
+
+
+	// Sleep for 10 seconds.
+	LARGE_INTEGER sleep_duration = { 0 };
+	sleep_duration.QuadPart = -10000000;
+	KeDelayExecutionThread(KernelMode, FALSE, &sleep_duration);
 
 	return STATUS_SUCCESS;
 }

@@ -2,6 +2,8 @@
 #include <ntifs.h>
 #include <Zydis/Zydis.h>
 
+#define Log(...) DbgPrintEx(0, 0, __VA_ARGS__)
+
 class TextHook
 {
 	static ZydisDecoder* m_Decoder;
@@ -29,6 +31,17 @@ private:
 	static bool WriteReadOnly(PVOID pAddress, PVOID pSource, ULONG Size);
 
 	static constexpr ULONG jumpSize = 12;
-	static PVOID CreateJmpToAddress(PVOID pTarget, ULONG Size);
-	static PVOID CreateCallDetour(PVOID pDetour, PVOID pOriginal, PVOID epilogue, ULONG epilogueSize);
+
+	// Creates a jump to the address specified by pTarget.
+	// Has to be freed with ExFreePool.
+	// Not executable. Copy to executable memory.
+	static PVOID CreateJmpToAddress(PVOID pTarget, ULONG Size = jumpSize);
+
+
+	// Creates a call to the address specified by pTarget. Preserves parameter registers.
+	// The original data (which is overwritten by the jmp) specified with pOriginal is executed after the call.
+	// After that it jumps back to the original function (pOriginal+orignalSize-1).
+	// The -1 is because rax needs to be poped after the jmp. (See CreateCallDetour)
+	// Has to be freed with ExFreePool.
+	static PVOID CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize);
 };

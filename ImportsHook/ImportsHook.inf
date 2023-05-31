@@ -36,7 +36,7 @@ WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with
 CopyFiles=Drivers_Dir
 
 [Drivers_Dir]
-ImportsHook.sys
+ImportsHook.sys,,,0x00004000  ; COPYFLG_IN_USE_RENAME
 
 ;-------------- Service installation
 [ImportsHook_Device.NT.Services]

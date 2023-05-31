@@ -1,4 +1,5 @@
 #include "TextHook.h"
+#include <intrin.h>
 #include <windef.h>
 
 ZydisDecoder* TextHook::m_Decoder = nullptr;
@@ -6,7 +7,11 @@ ZydisDecoder* TextHook::m_Decoder = nullptr;
 TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) : m_pTarget(pTarget), m_pDetour(pDetour), m_OriginalSize(0), m_pOriginal(nullptr), m_bEnabled(false), m_pCallDetour(nullptr), m_pJmpToCallDetour(nullptr), m_szFunctionName(szFunctionName)
 {
 	if (!m_Decoder) {
-		m_Decoder = (ZydisDecoder*)ExAllocatePool2(NonPagedPool, sizeof(ZydisDecoder), 'roDZ');
+		m_Decoder = (ZydisDecoder*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(ZydisDecoder), 'roDZ');
+		if (!m_Decoder) {
+			Log("TextHook: Could not allocate memory for the decoder.\n");
+			return;
+		}
 		ZydisDecoderInit(m_Decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
 	}
 
@@ -19,22 +24,20 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 			break;
 	}
 	if (Offset < jumpSize + 1) {
-		DbgPrint("TextHook: Could not find enough bytes to create a jump to the detour function.");
+		Log("TextHook: Could not find enough bytes to create a jump to the detour function.\n");
 		return;
 	}
 
-	PVOID endOfHook = (PVOID)((ULONG64)pTarget + Offset);
-
 	// Copy the original data of the function we want to hook.
 	m_OriginalSize = Offset;
-	m_pOriginal = ExAllocatePool2(NonPagedPool, Offset, 'girO');
+	m_pOriginal = ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, Offset, 'girO');
 	if (!m_pOriginal)
 		return;
 
 	RtlCopyMemory(m_pOriginal, pTarget, Offset);
 
 	// Create a detour function that calls the detour function.
-	m_pCallDetour = CreateCallDetour(m_pDetour, endOfHook, m_pOriginal, m_OriginalSize);
+	m_pCallDetour = CreateCallDetour(m_pDetour, m_pTarget, m_OriginalSize);
 	if (!m_pCallDetour)
 		return;
 
@@ -44,42 +47,44 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 		return;
 	((PBYTE)m_pJmpToCallDetour)[m_OriginalSize - 1] = 0x58; // pop rax (restored from epilogue. Check CreateCallDetour()!)
 
+	__debugbreak();
 	// Write the jump to the detour function.
 	if (!WriteReadOnly(pTarget, m_pJmpToCallDetour, m_OriginalSize)) {
-		DbgPrint("TextHook: Could not write the jump to the detour function.");
+		Log("TextHook: Could not write the jump to the detour function.\n");
 		return;
 	}
 
 	m_bEnabled = true;
 
-	DbgPrint("TextHook: Hooked %wZ at 0x%p.", m_szFunctionName, pTarget);
+	Log("TextHook: Hooked %wZ at 0x%p.\n", m_szFunctionName, pTarget);
 }
 
 TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pDetour) : TextHook(szFunctionName, MmGetSystemRoutineAddress(&szFunctionName), pDetour) {}
 
 TextHook::~TextHook()
 {
-	m_bEnabled = false;
+	Disable();
 
-	if (m_pOriginal) {
-		// Restore the original data of the function we want to hook.
-		WriteReadOnly(m_pTarget, m_pOriginal, m_OriginalSize);
-		ExFreePool(m_pOriginal);
-	}
+	if (m_pCallDetour)
+		ExFreePool(m_pCallDetour);
 
 	if (m_pJmpToCallDetour)
 		ExFreePool(m_pJmpToCallDetour);
 
-	if (m_pCallDetour)
-		ExFreePool(m_pCallDetour);
+	if (m_pOriginal)
+		ExFreePool(m_pOriginal);
+
+	Log("TextHook: Unhooked %wZ.\n", m_szFunctionName);
 }
 
 void TextHook::Enable()
 {
 	if (m_bEnabled)
 		return;
+	if(!m_pTarget || !m_pJmpToCallDetour || !m_OriginalSize)
+		return;
 	if (!WriteReadOnly(m_pTarget, m_pJmpToCallDetour, m_OriginalSize)) {
-		DbgPrint("TextHook: Could not write the jump to the detour function.");
+		Log("TextHook: Could not write the jump to the detour function.\n");
 		return;
 	}
 	m_bEnabled = true;
@@ -89,8 +94,10 @@ void TextHook::Disable()
 {
 	if (!m_bEnabled)
 		return;
+	if (!m_pTarget || !m_pOriginal || !m_OriginalSize)
+		return;
 	if (!WriteReadOnly(m_pTarget, m_pOriginal, m_OriginalSize)) {
-		DbgPrint("TextHook: Could not write the original data.");
+		Log("TextHook: Could not write the original data.\n");
 		return;
 	}
 	m_bEnabled = false;
@@ -106,7 +113,11 @@ bool TextHook::WriteReadOnly(PVOID pAddress, PVOID pSource, ULONG Size)
 	PVOID Mapping = MmMapLockedPagesSpecifyCache(Mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
 	MmProtectMdlSystemAddress(Mdl, PAGE_READWRITE);
 
+	_disable();
+	KeEnterGuardedRegion();
 	RtlCopyMemory((PVOID)Mapping, pSource, Size);
+	KeLeaveGuardedRegion();
+	_enable();
 
 	MmUnmapLockedPages(Mapping, Mdl);
 	MmUnlockPages(Mdl);
@@ -120,9 +131,10 @@ PVOID TextHook::CreateJmpToAddress(PVOID pTarget, ULONG Size)
 	if (Size < jumpSize)
 		return nullptr;
 
-	PBYTE pJmpToAddress = (PBYTE)ExAllocatePool2(NonPagedPool, Size, 'pmtJ');
+	PBYTE pJmpToAddress = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, 'pmtJ');
 	if (!pJmpToAddress)
 		return nullptr;
+	RtlFillMemory(pJmpToAddress, Size, 0x90); // nop
 
 	// mov rax, pTarget
 	// jmp rax
@@ -138,15 +150,9 @@ PVOID TextHook::CreateJmpToAddress(PVOID pTarget, ULONG Size)
 	return pJmpToAddress;
 }
 
-PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, PVOID epilogue, ULONG epilogueSize)
+PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize)
 {
-	if (!pDetour || !pOriginal || !epilogue || !epilogueSize)
-		return nullptr;
-	// 32 bytes for the call detour.
-	// 1 byte for push rax.
-	ULONG callDetourSize = 32 + epilogueSize + 1 + jumpSize;
-	PBYTE pCallDetour = (PBYTE)ExAllocatePool2(NonPagedPool, callDetourSize, 'llaC');
-	if (!pCallDetour)
+	if (!pDetour || !pOriginal || !originalSize)
 		return nullptr;
 
 	// push rcx
@@ -166,28 +172,41 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, PVOID epilogue,
 	// push rax
 	// JmpToAddress
 
-	// JmpToAddress jumps to the original function BUT! -1 to pop rax.
-	pCallDetour[0] = 0x51; // push rcx
-	pCallDetour[1] = 0x52; // push rdx
-	pCallDetour[2] = 0x41; pCallDetour[3] = 0x50; // push r8 
-	pCallDetour[4] = 0x41; pCallDetour[5] = 0x51; // push r9
-	pCallDetour[7] = 0x48; pCallDetour[8] = 0x83; pCallDetour[9] = 0xEC; pCallDetour[10] = 0x20; // sub rsp, 0x20
-	pCallDetour[11] = 0x48; pCallDetour[12] = 0xB8; *(PVOID*)(&pCallDetour[13]) = pDetour; // mov rax, pDetour
-	pCallDetour[21] = 0xFF; pCallDetour[22] = 0xD0; // call rax
-	pCallDetour[23] = 0x48; pCallDetour[24] = 0x83; pCallDetour[25] = 0xC4; pCallDetour[26] = 0x20; // add rsp, 0x20
-	pCallDetour[27] = 0x41; pCallDetour[28] = 0x59; // pop r9
-	pCallDetour[29] = 0x41; pCallDetour[30] = 0x58; // pop r8
-	pCallDetour[31] = 0x5A; // pop rdx
-	pCallDetour[32] = 0x59; // pop rcx
+	BYTE assembly[] = {
+		0x51, // push rcx
+		0x52, // push rdx
+		0x41, 0x50, // push r8
+		0x41, 0x51, // push r9
+		0x48, 0x83, 0xEC, 0x20, // sub rsp, 0x20
+		0x48, 0xB8, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // mov rax, pTarget
+		0xFF, 0xD0, // call rax
+		0x48, 0x83, 0xC4, 0x20, // add rsp, 0x20
+		0x41, 0x59, // pop r9
+		0x41, 0x58, // pop r8
+		0x5A, // pop rdx
+		0x59 // pop rcx
+	};
 
-	RtlCopyMemory(&pCallDetour[33], epilogue, epilogueSize);
+	// 1 byte for push rax.
+	ULONG callDetourSize = sizeof(assembly) + originalSize + 1 + jumpSize;
+	PBYTE pCallDetour = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, callDetourSize, 'llaC');
+	if (!pCallDetour)
+		return nullptr;
 
-	PVOID pJmpToAddress = CreateJmpToAddress((PVOID)((ULONG64)pOriginal + epilogueSize), jumpSize);
+	RtlCopyMemory(pCallDetour, assembly, sizeof(assembly));
+	*(PVOID*)(&pCallDetour[12]) = pDetour;
+
+	RtlCopyMemory(&pCallDetour[sizeof(assembly)], pOriginal, originalSize);
+
+	PVOID pJmpToAddress = CreateJmpToAddress((PVOID)((ULONG64)pOriginal + originalSize - 1));
 	if (!pJmpToAddress) {
 		ExFreePool(pCallDetour);
 		return nullptr;
 	}
-	RtlCopyMemory(&pCallDetour[33 + epilogueSize], pJmpToAddress, jumpSize);
+
+	pCallDetour[sizeof(assembly) + originalSize] = 0x50; // push rax
+
+	RtlCopyMemory(&pCallDetour[sizeof(assembly) + originalSize + 1], pJmpToAddress, jumpSize);
 	ExFreePool(pJmpToAddress);
 
 	return pCallDetour;
