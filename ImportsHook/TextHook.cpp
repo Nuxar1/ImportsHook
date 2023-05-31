@@ -47,7 +47,6 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 		return;
 	((PBYTE)m_pJmpToCallDetour)[m_OriginalSize - 1] = 0x58; // pop rax (restored from epilogue. Check CreateCallDetour()!)
 
-	__debugbreak();
 	// Write the jump to the detour function.
 	if (!WriteReadOnly(pTarget, m_pJmpToCallDetour, m_OriginalSize)) {
 		Log("TextHook: Could not write the jump to the detour function.\n");

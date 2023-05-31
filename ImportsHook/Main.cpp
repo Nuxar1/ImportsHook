@@ -14,7 +14,7 @@ NTSTATUS DriverEntry(
 	Log(0, 0, "ImportsHook loaded\n");
 
 
-	// Sleep for 10 seconds.
+	// Sleep for 1 seconds.
 	LARGE_INTEGER sleep_duration = { 0 };
 	sleep_duration.QuadPart = -10000000;
 	KeDelayExecutionThread(KernelMode, FALSE, &sleep_duration);
