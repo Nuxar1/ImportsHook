@@ -1,11 +1,13 @@
 #include "TextHook.h"
-#include <intrin.h>
-#include <windef.h>
 
 ZydisDecoder* TextHook::m_Decoder = nullptr;
 
 TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) : m_pTarget(pTarget), m_pDetour(pDetour), m_OriginalSize(0), m_pOriginal(nullptr), m_bEnabled(false), m_pCallDetour(nullptr), m_pJmpToCallDetour(nullptr), m_szFunctionName(szFunctionName)
 {
+	if (!m_pTarget || !m_pDetour) {
+		Log("TextHook: Invalid parameters (%wZ). pTarget: 0x%p, pDetour: 0x%p.\n", szFunctionName, pTarget, pDetour);
+	}
+
 	if (!m_Decoder) {
 		m_Decoder = (ZydisDecoder*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(ZydisDecoder), 'roDZ');
 		if (!m_Decoder) {
@@ -16,10 +18,12 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 	}
 
 	// Decode the first instructions of the function we want to hook until we have enough bytes to create a jump to the detour function.
-	ZydisDecodedInstruction Instruction;
+	Instruction Instructions[jumpSize];
+	ULONG instructionCount = 0;
 	ULONG Offset = 0;
-	while (ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(m_Decoder, (ZydisDecoderContext*)ZYAN_NULL, (PVOID)((ULONG64)pTarget + Offset), jumpSize + 0x10, &Instruction))) {
-		Offset += Instruction.length;
+	while (Instructions[instructionCount].Decode(m_Decoder, (PVOID)((ULONG64)pTarget + Offset), jumpSize + 0x10 - Offset)) {
+		Offset += Instructions[instructionCount].m_Instruction.length;
+		instructionCount++;
 		if (Offset >= jumpSize + 1) // jumpsize + 1 byte for pop rax
 			break;
 	}
@@ -37,7 +41,7 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 	RtlCopyMemory(m_pOriginal, pTarget, Offset);
 
 	// Create a detour function that calls the detour function.
-	m_pCallDetour = CreateCallDetour(m_pDetour, m_pTarget, m_OriginalSize);
+	m_pCallDetour = CreateCallDetour(m_pDetour, m_pTarget, m_OriginalSize, Instructions, instructionCount);
 	if (!m_pCallDetour)
 		return;
 
@@ -80,7 +84,7 @@ void TextHook::Enable()
 {
 	if (m_bEnabled)
 		return;
-	if(!m_pTarget || !m_pJmpToCallDetour || !m_OriginalSize)
+	if (!m_pTarget || !m_pJmpToCallDetour || !m_OriginalSize)
 		return;
 	if (!WriteReadOnly(m_pTarget, m_pJmpToCallDetour, m_OriginalSize)) {
 		Log("TextHook: Could not write the jump to the detour function.\n");
@@ -149,7 +153,139 @@ PVOID TextHook::CreateJmpToAddress(PVOID pTarget, ULONG Size)
 	return pJmpToAddress;
 }
 
-PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize)
+ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, ULONG count)
+{
+	// relative addresses need fixup.
+	ULONG Offset = 0;
+	ULONG_PTR address = (ULONG_PTR)pDestination;
+	for (size_t i = 0; i < count; i++)
+	{
+		const ZydisDecodedInstruction& instruction = pInstruction[i].m_Instruction;
+		const ZydisDecodedOperand* operands = pInstruction[i].m_Operands;
+
+
+		if (instruction.attributes & ZYDIS_ATTRIB_IS_RELATIVE) {
+
+			switch (instruction.meta.category)
+			{
+			case ZYDIS_CATEGORY_CALL:
+			{
+				// "call [rip + 0x0]" would work but the return address would be at the the data we call and not after that.
+				// thats why we use: 
+				// push 0xABC (the lower bits)
+				// push 0xDEF (the higher bits)
+				// jmp target (absolute address, encoded as jmp [rip + 0x0])
+				ULONG_PTR target = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operands[0].imm.value.s;
+				BYTE push_rax[] = { 0x50 }; // push rax to decrement the stack pointer
+				BYTE mov_rsp_higher[] = { 0xC7, 0x44, 0x24, 0x04, 0x00, 0x00, 0x00, 0x00 }; // mov [rsp + 0x4], 0x0
+				BYTE mov_rsp_lower[] = { 0xC7, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00 }; // mov [rsp], 0x0
+				BYTE jmp_far[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+				ULONG_PTR returnAddress = address + Offset + sizeof(mov_rsp_higher) + sizeof(mov_rsp_higher) + sizeof(jmp_far);
+				UINT32 lower = (UINT32)returnAddress;
+				UINT32 higher = (UINT32)(returnAddress >> 32);
+				*(UINT32*)(&mov_rsp_lower[3]) = lower;
+				*(UINT32*)(&mov_rsp_higher[4]) = higher;
+				*(ULONG_PTR*)(&jmp_far[6]) = target;
+
+				RtlCopyMemory((PVOID)(address + Offset), push_rax, sizeof(push_rax));
+				Offset += sizeof(push_rax);
+
+				RtlCopyMemory((PVOID)(address + Offset), mov_rsp_lower, sizeof(mov_rsp_lower));
+				Offset += sizeof(mov_rsp_lower);
+
+				RtlCopyMemory((PVOID)(address + Offset), mov_rsp_higher, sizeof(mov_rsp_higher));
+				Offset += sizeof(mov_rsp_higher);
+
+				RtlCopyMemory((PVOID)(address + Offset), jmp_far, sizeof(jmp_far));
+				Offset += sizeof(jmp_far);
+
+				__debugbreak();
+				break;
+			}
+			case ZYDIS_CATEGORY_COND_BR:
+			{
+				// only jmp can jump to 64 bit absolute addresses
+				//	jcc DO_JUMP 
+				//	jmp NO_JUMP
+				// DO_JUMP:
+				//	jmp target (actually encoded as jmp [rip + 0x0])
+				// NO_JUMP:
+				ULONG_PTR target = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operands[0].imm.value.s;
+
+				BYTE jmp_far[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+				*(ULONG_PTR*)(&jmp_far[6]) = target;
+
+				BYTE jmp_no_jump[] = { 0xEB, sizeof(jmp_far) };
+
+
+				ZydisEncoderRequest jcc_do_jump;
+				jcc_do_jump.machine_mode = instruction.machine_mode;
+				jcc_do_jump.mnemonic = instruction.mnemonic;
+				jcc_do_jump.operand_count = 1;
+				jcc_do_jump.operands[0].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
+				jcc_do_jump.operands[0].imm.s = sizeof(jmp_far) + 2; // 2 = length of jmp NO_JUMP instruction. This is double checked in the code below.
+				ZyanUSize encoded_length = ZYDIS_MAX_INSTRUCTION_LENGTH;
+				ZydisEncoderEncodeInstruction(&jcc_do_jump, (PVOID)(address + Offset), &encoded_length); // jcc DO_JUMP
+				Offset += (ULONG)encoded_length;
+
+				RtlCopyMemory((PVOID)(address + Offset), jmp_no_jump, sizeof(jmp_no_jump)); // jmp NO_JUMP
+				Offset += sizeof(jmp_no_jump);
+
+				RtlCopyMemory((PVOID)(address + Offset), jmp_far, sizeof(jmp_far)); // jmp target
+				Offset += sizeof(jmp_far);
+				break;
+			}
+			case ZYDIS_CATEGORY_UNCOND_BR:
+			{
+				// jmp [rip + 0x0] can jump to 64 bit absolute addresses
+				ULONG_PTR target = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operands[0].imm.value.s;
+				BYTE jmp_far[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+				*(ULONG_PTR*)(&jmp_far[6]) = target;
+
+				RtlCopyMemory((PVOID)(address + Offset), jmp_far, sizeof(jmp_far));
+
+				break;
+			}
+			default:
+			{
+				ZydisEncoderRequest req;
+				ZydisEncoderDecodedInstructionToEncoderRequest(&instruction, pInstruction[i].m_Operands, instruction.operand_count_visible, &req);
+				for (size_t j = 0; j < req.operand_count; j++) {
+					ZydisEncoderOperand& operand = req.operands[j];
+
+					if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY && operand.mem.base == ZYDIS_REGISTER_RIP) {
+						ULONG_PTR memoryTarget = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operand.mem.displacement;
+
+						operand.mem.displacement = memoryTarget - (address + Offset + instruction.length);
+
+						Log("TextHook: Fixup relative address at %p from 0x%x to 0x%x (target: %p)\n", address, pInstruction[i].m_Operands[j].mem.disp.value, operand.mem.displacement, memoryTarget);
+					}
+				}
+
+				ZyanU8 encoded_instruction[ZYDIS_MAX_INSTRUCTION_LENGTH] = { 0 };
+				ZyanUSize encoded_length = sizeof(encoded_instruction);
+				if (ZYAN_FAILED(ZydisEncoderEncodeInstruction(&req, encoded_instruction, &encoded_length)))
+				{
+					Log("TextHook: Failed to encode instruction.\n");
+					__debugbreak();
+					return 0;
+				}
+				RtlCopyMemory((PVOID)(address + Offset), encoded_instruction, encoded_length);
+				Offset += (ULONG)encoded_length;
+				break;
+			}
+			}
+
+		}
+		else {
+			RtlCopyMemory((PVOID)(address + Offset), pInstruction[i].m_RawData, instruction.length);
+			Offset += instruction.length;
+		}
+	}
+	return Offset;
+}
+
+PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize, Instruction* pEpilogue, ULONG count)
 {
 	if (!pDetour || !pOriginal || !originalSize)
 		return nullptr;
@@ -187,7 +323,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	};
 
 	// 1 byte for push rax.
-	ULONG callDetourSize = sizeof(assembly) + originalSize + 1 + jumpSize;
+	// double of original size since relative addresses need fixup and we don't know the size yet.
+	ULONG callDetourSize = sizeof(assembly) + originalSize * 3 + 1 + jumpSize;
 	PBYTE pCallDetour = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, callDetourSize, 'llaC');
 	if (!pCallDetour)
 		return nullptr;
@@ -195,7 +332,7 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	RtlCopyMemory(pCallDetour, assembly, sizeof(assembly));
 	*(PVOID*)(&pCallDetour[12]) = pDetour;
 
-	RtlCopyMemory(&pCallDetour[sizeof(assembly)], pOriginal, originalSize);
+	ULONG newInstructionsSize = CopyInstruction(pCallDetour + sizeof(assembly), pEpilogue, count);
 
 	PVOID pJmpToAddress = CreateJmpToAddress((PVOID)((ULONG64)pOriginal + originalSize - 1));
 	if (!pJmpToAddress) {
@@ -203,9 +340,9 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 		return nullptr;
 	}
 
-	pCallDetour[sizeof(assembly) + originalSize] = 0x50; // push rax
+	pCallDetour[sizeof(assembly) + newInstructionsSize] = 0x50; // push rax
 
-	RtlCopyMemory(&pCallDetour[sizeof(assembly) + originalSize + 1], pJmpToAddress, jumpSize);
+	RtlCopyMemory(&pCallDetour[sizeof(assembly) + newInstructionsSize + 1], pJmpToAddress, jumpSize);
 	ExFreePool(pJmpToAddress);
 
 	return pCallDetour;

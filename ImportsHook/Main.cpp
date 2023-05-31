@@ -1,6 +1,16 @@
 #include "TextHook.h"
 
+inline void* __CRTDECL operator new(size_t, void* _P) noexcept
+{
+	return (_P);
+}
 
+TextHook* io_hook = nullptr;
+
+
+void Callback(const wchar_t* str) {
+	Log("Callback: %ws\n", str);
+}
 
 NTSTATUS DriverEntry(
 	_In_ PDRIVER_OBJECT  DriverObject,
@@ -9,15 +19,15 @@ NTSTATUS DriverEntry(
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNREFERENCED_PARAMETER(RegistryPath);
 
-	TextHook getPhysAddrHook(RTL_CONSTANT_STRING(L"IofCompleteRequest"), (PVOID)static_cast<void(*)()>([]() { Log("IofCompleteRequest called from %p\n", _ReturnAddress()); }));
+	io_hook = (TextHook*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TextHook), 'kooH');
 
-	Log(0, 0, "ImportsHook loaded\n");
+	if (!io_hook) {
+		Log("Could not allocate memory for the hook.\n");
+		return STATUS_UNSUCCESSFUL;
+	}
 
-
-	// Sleep for 1 seconds.
-	LARGE_INTEGER sleep_duration = { 0 };
-	sleep_duration.QuadPart = -10000000;
-	KeDelayExecutionThread(KernelMode, FALSE, &sleep_duration);
+	// call the constructor
+	new (io_hook) TextHook(RTL_CONSTANT_STRING(L"NtAddAtom"), (PVOID)Callback);
 
 	return STATUS_SUCCESS;
 }
