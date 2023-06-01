@@ -53,12 +53,12 @@ public:
 private:
 	static bool WriteReadOnly(PVOID pAddress, PVOID pSource, ULONG Size);
 
-	static constexpr ULONG jumpSize = 12;
+	static constexpr ULONG jumpSize = 14;
 
 	// Creates a jump to the address specified by pTarget.
 	// Has to be freed with ExFreePool.
 	// Not executable. Copy to executable memory.
-	static PVOID CreateJmpToAddress(PVOID pTarget, ULONG Size = jumpSize);
+	static PVOID CreateJmpToAddress(PVOID pTarget);
 
 	// returns the new size
 	static ULONG CopyInstruction(PVOID pDestination, Instruction* pInstruction, ULONG count);

@@ -18,27 +18,32 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 	}
 
 	// Decode the first instructions of the function we want to hook until we have enough bytes to create a jump to the detour function.
-	Instruction Instructions[jumpSize];
+	//Instruction Instructions[jumpSize];
+	Instruction* Instructions = (Instruction*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(Instruction) * jumpSize, 'tsnI');
+	if (!Instructions) {
+		Log("TextHook: Could not allocate memory for the instructions.\n");
+		return;
+	}
 	ULONG instructionCount = 0;
 	ULONG Offset = 0;
-	while (Instructions[instructionCount].Decode(m_Decoder, (PVOID)((ULONG64)pTarget + Offset), jumpSize + 0x10 - Offset)) {
+	while (Instructions[instructionCount].Decode(m_Decoder, (PVOID)((ULONG64)pTarget + Offset), jumpSize + ZYDIS_MAX_INSTRUCTION_LENGTH - Offset)) {
 		Offset += Instructions[instructionCount].m_Instruction.length;
 		instructionCount++;
-		if (Offset >= jumpSize + 1) // jumpsize + 1 byte for pop rax
+		if (Offset >= jumpSize)
 			break;
 	}
-	if (Offset < jumpSize + 1) {
+	if (Offset < jumpSize) {
 		Log("TextHook: Could not find enough bytes to create a jump to the detour function.\n");
 		return;
 	}
 
 	// Copy the original data of the function we want to hook.
 	m_OriginalSize = Offset;
-	m_pOriginal = ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, Offset, 'girO');
+	m_pOriginal = ExAllocatePool2(POOL_FLAG_NON_PAGED, m_OriginalSize, 'girO');
 	if (!m_pOriginal)
 		return;
 
-	RtlCopyMemory(m_pOriginal, pTarget, Offset);
+	RtlCopyMemory(m_pOriginal, pTarget, m_OriginalSize);
 
 	// Create a detour function that calls the detour function.
 	m_pCallDetour = CreateCallDetour(m_pDetour, m_pTarget, m_OriginalSize, Instructions, instructionCount);
@@ -46,10 +51,9 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 		return;
 
 	// Create a jump to the detour function.
-	m_pJmpToCallDetour = CreateJmpToAddress(m_pCallDetour, m_OriginalSize);
+	m_pJmpToCallDetour = CreateJmpToAddress(m_pCallDetour);
 	if (!m_pJmpToCallDetour)
 		return;
-	((PBYTE)m_pJmpToCallDetour)[m_OriginalSize - 1] = 0x58; // pop rax (restored from epilogue. Check CreateCallDetour()!)
 
 	// Write the jump to the detour function.
 	if (!WriteReadOnly(pTarget, m_pJmpToCallDetour, m_OriginalSize)) {
@@ -129,26 +133,18 @@ bool TextHook::WriteReadOnly(PVOID pAddress, PVOID pSource, ULONG Size)
 	return true;
 }
 
-PVOID TextHook::CreateJmpToAddress(PVOID pTarget, ULONG Size)
+PVOID TextHook::CreateJmpToAddress(PVOID pTarget)
 {
-	if (Size < jumpSize)
-		return nullptr;
-
-	PBYTE pJmpToAddress = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED, Size, 'pmtJ');
+	PBYTE pJmpToAddress = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED, jumpSize, 'pmtJ');
 	if (!pJmpToAddress)
 		return nullptr;
-	RtlFillMemory(pJmpToAddress, Size, 0x90); // nop
 
-	// mov rax, pTarget
-	// jmp rax
-	// ...
-	// pop rax
+	// jmp [rip + 0]
 
-	pJmpToAddress[0] = 0x48;
-	pJmpToAddress[1] = 0xB8;
-	*(PVOID*)(&pJmpToAddress[2]) = pTarget;
-	pJmpToAddress[10] = 0xFF;
-	pJmpToAddress[11] = 0xE0;
+	BYTE jmp[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 }; // jmp [rip + 0]
+
+	RtlCopyMemory(pJmpToAddress, jmp, sizeof(jmp));
+	*(PVOID*)(pJmpToAddress + sizeof(jmp)) = pTarget;
 
 	return pJmpToAddress;
 }
@@ -170,6 +166,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			{
 			case ZYDIS_CATEGORY_CALL:
 			{
+				__debugbreak();
 				// "call [rip + 0x0]" would work but the return address would be at the the data we call and not after that.
 				// thats why we use: 
 				// push 0xABC (the lower bits)
@@ -202,6 +199,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			case ZYDIS_CATEGORY_COND_BR:
 			{
+				__debugbreak();
 				// only jmp can jump to 64 bit absolute addresses
 				//	jcc DO_JUMP 
 				//	jmp NO_JUMP
@@ -222,7 +220,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 				jcc_do_jump.mnemonic = instruction.mnemonic;
 				jcc_do_jump.operand_count = 1;
 				jcc_do_jump.operands[0].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
-				jcc_do_jump.operands[0].imm.s = sizeof(jmp_far) + sizeof(jmp_no_jump);
+				jcc_do_jump.operands[0].imm.s = sizeof(jmp_no_jump);
 				ZyanUSize encoded_length = ZYDIS_MAX_INSTRUCTION_LENGTH;
 				ZydisEncoderEncodeInstruction(&jcc_do_jump, (PVOID)(address + Offset), &encoded_length); // jcc DO_JUMP
 				Offset += (ULONG)encoded_length;
@@ -236,6 +234,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			case ZYDIS_CATEGORY_UNCOND_BR:
 			{
+				__debugbreak();
 				// jmp [rip + 0x0] can jump to 64 bit absolute addresses
 				ULONG_PTR target = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operands[0].imm.value.s;
 				BYTE jmp_far[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -248,6 +247,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			default:
 			{
+				__debugbreak();
 				ZydisEncoderRequest req;
 				ZydisEncoderDecodedInstructionToEncoderRequest(&instruction, pInstruction[i].m_Operands, instruction.operand_count_visible, &req);
 				for (size_t j = 0; j < req.operand_count; j++) {
@@ -259,7 +259,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 						operand.mem.base = ZYDIS_REGISTER_NONE;
 						operand.mem.displacement = memoryTarget;
 
-						Log("TextHook: Fixup relative address at %p from 0x%x to %p)\n", address, pInstruction[i].m_Operands[j].mem.disp.value, memoryTarget);
+						Log("TextHook: Fixup relative address at %p from 0x%x to %p\n", address, pInstruction[i].m_Operands[j].mem.disp.value, memoryTarget);
 					}
 				}
 
@@ -279,7 +279,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 		}
 		else {
 			RtlCopyMemory((PVOID)(address + Offset), pInstruction[i].m_RawData, instruction.length);
-			Offset += instruction.length;
+			Offset += instruction.length;	
 		}
 	}
 	return Offset;
@@ -290,6 +290,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	if (!pDetour || !pOriginal || !originalSize)
 		return nullptr;
 
+	// Todo: SwapContext and RestoreContext instead of just registers for parameters
+	// 
 	// push rcx
 	// push rdx
 	// push r8
@@ -303,8 +305,7 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	// pop rdx
 	// pop rcx
 	// 
-	// epilogue
-	// push rax
+	// epilogue <--- CopyInstruction
 	// JmpToAddress
 
 	BYTE assembly[] = {
@@ -322,9 +323,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 		0x59 // pop rcx
 	};
 
-	// 1 byte for push rax.
 	// double of original size since relative addresses need fixup and we don't know the size yet.
-	ULONG callDetourSize = sizeof(assembly) + originalSize * 3 + 1 + jumpSize;
+	ULONG callDetourSize = sizeof(assembly) + originalSize * 3 + jumpSize;
 	PBYTE pCallDetour = (PBYTE)ExAllocatePool2(POOL_FLAG_NON_PAGED_EXECUTE, callDetourSize, 'llaC');
 	if (!pCallDetour)
 		return nullptr;
@@ -334,15 +334,13 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 
 	ULONG newInstructionsSize = CopyInstruction(pCallDetour + sizeof(assembly), pEpilogue, count);
 
-	PVOID pJmpToAddress = CreateJmpToAddress((PVOID)((ULONG64)pOriginal + originalSize - 1));
+	PVOID pJmpToAddress = CreateJmpToAddress((PVOID)((ULONG64)pOriginal + originalSize));
 	if (!pJmpToAddress) {
 		ExFreePool(pCallDetour);
 		return nullptr;
 	}
 
-	pCallDetour[sizeof(assembly) + newInstructionsSize] = 0x50; // push rax
-
-	RtlCopyMemory(&pCallDetour[sizeof(assembly) + newInstructionsSize + 1], pJmpToAddress, jumpSize);
+	RtlCopyMemory(&pCallDetour[sizeof(assembly) + newInstructionsSize], pJmpToAddress, jumpSize);
 	ExFreePool(pJmpToAddress);
 
 	return pCallDetour;
