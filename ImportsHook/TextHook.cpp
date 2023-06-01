@@ -290,6 +290,9 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	if (!pDetour || !pOriginal || !originalSize)
 		return nullptr;
 
+
+	// Straight up copied from nt!SwapContext (ntoskrnl.exe) :-)
+	// 
 	// sub     rsp, 138h
 	// lea     rax, [rsp+100h]
 	// movaps  xmmword ptr [rsp+30h], xmm6
