@@ -166,7 +166,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			{
 			case ZYDIS_CATEGORY_CALL:
 			{
-				__debugbreak();
 				// "call [rip + 0x0]" would work but the return address would be at the the data we call and not after that.
 				// thats why we use: 
 				// push 0xABC (the lower bits)
@@ -199,7 +198,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			case ZYDIS_CATEGORY_COND_BR:
 			{
-				__debugbreak();
 				// only jmp can jump to 64 bit absolute addresses
 				//	jcc DO_JUMP 
 				//	jmp NO_JUMP
@@ -234,7 +232,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			case ZYDIS_CATEGORY_UNCOND_BR:
 			{
-				__debugbreak();
 				// jmp [rip + 0x0] can jump to 64 bit absolute addresses
 				ULONG_PTR target = (ULONG_PTR)pInstruction[i].m_pAddress + instruction.length + operands[0].imm.value.s;
 				BYTE jmp_far[] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -247,7 +244,6 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 			}
 			default:
 			{
-				__debugbreak();
 				ZydisEncoderRequest req;
 				ZydisEncoderDecodedInstructionToEncoderRequest(&instruction, pInstruction[i].m_Operands, instruction.operand_count_visible, &req);
 				for (size_t j = 0; j < req.operand_count; j++) {
@@ -293,6 +289,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 
 	// Straight up copied from nt!SwapContext (ntoskrnl.exe) :-)
 	// 
+	// Save context
+	// 
 	// sub     rsp, 138h
 	// lea     rax, [rsp+100h]
 	// movaps  xmmword ptr [rsp+30h], xmm6
@@ -316,6 +314,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	// mov rax, pTarget
 	// call rax
 	// 
+	// Restore context
+	// 
 	// lea     rcx, [rsp+138h+var_38]
 	// movaps  xmm6, [rsp+138h+var_108]
 	// movaps  xmm7, [rsp+138h+var_F8]
@@ -335,6 +335,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	// mov     r14, [rcx+28h]
 	// mov     r15, [rcx+30h]
 	// add     rsp, 138h
+	// 
+	// 
 	// 
 	// epilogue <--- CopyInstruction
 	// JmpToAddress
