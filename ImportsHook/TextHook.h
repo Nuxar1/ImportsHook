@@ -4,8 +4,6 @@
 #include <windef.h>
 #include <Zydis/Zydis.h>
 
-#define Log(...) DbgPrintEx(0, 0, __VA_ARGS__)
-
 class Instruction
 {
 public:

@@ -1,4 +1,12 @@
 #include "TextHook.h"
+#include "Util.h"
+
+struct Driver {
+	ULONG_PTR ImageBase;
+	ULONG ImageSize;
+};
+
+Driver target_driver;
 
 inline void* __CRTDECL operator new(size_t, void* _P) noexcept
 {
@@ -7,9 +15,12 @@ inline void* __CRTDECL operator new(size_t, void* _P) noexcept
 
 TextHook* io_hook = nullptr;
 
-
+bool breakpoint = false;
 void Callback() {
-	Log("IofCompleteRequest: %p\n", _ReturnAddress());
+	ULONG_PTR returnAddress = (ULONG_PTR)_ReturnAddress();
+	if (returnAddress >= target_driver.ImageBase && returnAddress < (target_driver.ImageBase + target_driver.ImageSize)) {
+		Log("driver called IofCompleteRequest from %p\n", returnAddress - target_driver.ImageBase);
+	}
 }
 
 NTSTATUS DriverEntry(
@@ -18,6 +29,13 @@ NTSTATUS DriverEntry(
 ) {
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNREFERENCED_PARAMETER(RegistryPath);
+
+	// find the vgc driver:
+	target_driver.ImageBase = (ULONG_PTR)GetModuleBaseAddress("ntoskrnl.exe", &target_driver.ImageSize);
+	if (!target_driver.ImageBase) {
+		Log("Could not find the driver.\n");
+		return STATUS_UNSUCCESSFUL;
+	}
 
 	io_hook = (TextHook*)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(TextHook), 'kooH');
 
