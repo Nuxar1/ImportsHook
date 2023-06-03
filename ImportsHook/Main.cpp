@@ -169,8 +169,8 @@ void DriverUnload(PDRIVER_OBJECT driver_object) {
 
 	Log("Driver unloaded.\n");
 }
-PDRIVER_OBJECT driver_object;
-NTSTATUS DriverInitialize(PDRIVER_OBJECT, PUNICODE_STRING registry_path) {
+
+NTSTATUS DriverInitialize(PDRIVER_OBJECT driver_object, PUNICODE_STRING registry_path) {
 	UNREFERENCED_PARAMETER(registry_path);
 
 	// create a device object
@@ -200,9 +200,6 @@ NTSTATUS DriverInitialize(PDRIVER_OBJECT, PUNICODE_STRING registry_path) {
 	driver_object->MajorFunction[IRP_MJ_CLOSE] = do_nothing;
 	driver_object->MajorFunction[IRP_MJ_DEVICE_CONTROL] = Dispatch;
 
-	device_object->Flags |= DO_DIRECT_IO;
-	device_object->Flags &= ~DO_DEVICE_INITIALIZING;
-
 	Log("Driver initialized.\n");
 	Log("Driver object: 0x%p, deviceobject: 0x%p\n", driver_object, driver_object->DeviceObject);
 
@@ -215,7 +212,7 @@ NTSTATUS DriverEntry(
 ) {
 	UNREFERENCED_PARAMETER(DriverObject);
 	UNREFERENCED_PARAMETER(RegistryPath);
-	driver_object = DriverObject;
+
 	target_driver.ImageBase = 0;
 	target_driver.ImageSize = 0;
 
