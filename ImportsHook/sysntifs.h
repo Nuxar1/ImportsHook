@@ -15,6 +15,16 @@
 
 #define POOL_TAG 'nUcS'
 
+#pragma warning(disable : 4595)
+inline void* __CRTDECL operator new(size_t, void* _P) noexcept
+{
+	return (_P);
+}
+inline void __CRTDECL operator delete(void*, size_t) noexcept
+{
+	return;
+}
+
 typedef struct _RTL_PROCESS_MODULE_INFORMATION
 {
 	HANDLE Section;
@@ -170,6 +180,11 @@ extern "C" NTSTATUS ZwQuerySystemInformation(
 	ULONG Length,
 	PULONG ReturnLength
 	);
+extern "C"
+NTKERNELAPI NTSTATUS IoCreateDriver(
+	IN PUNICODE_STRING DriverName,
+	OPTIONAL IN PDRIVER_INITIALIZE InitializationFunction
+);
 
 typedef struct _LDR_DATA_TABLE_ENTRY {
 	LIST_ENTRY InLoadOrderModuleList;

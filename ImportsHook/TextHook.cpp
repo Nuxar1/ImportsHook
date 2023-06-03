@@ -47,7 +47,7 @@ TextHook::TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour) 
 	RtlCopyMemory(m_pOriginal, pTarget, m_OriginalSize);
 
 	// Create a detour function that calls the detour function.
-	m_pCallDetour = CreateCallDetour(m_pDetour, m_pTarget, m_OriginalSize, Instructions, instructionCount);
+	m_pCallDetour = CreateCallDetour(this, m_pDetour, m_pTarget, m_OriginalSize, Instructions, instructionCount);
 	if (!m_pCallDetour)
 		return;
 
@@ -282,7 +282,7 @@ ULONG TextHook::CopyInstruction(PVOID pDestination, Instruction* pInstruction, U
 	return Offset;
 }
 
-PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize, Instruction* pEpilogue, ULONG count)
+PVOID TextHook::CreateCallDetour(PVOID pThis, PVOID pDetour, PVOID pOriginal, ULONG originalSize, Instruction* pEpilogue, ULONG count)
 {
 	if (!pDetour || !pOriginal || !originalSize)
 		return nullptr;
@@ -305,6 +305,7 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 	// mov [rsp + 0xB8], r10
 	// mov [rsp + 0xC0], r11
 	// 
+	// mov rcx, pThis
 	// mov rax, pDetour
 	// call rax
 	// 
@@ -345,6 +346,7 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 		0x4C, 0x89, 0x94, 0x24, 0xB8, 0x00, 0x00, 0x00, 
 		0x4C, 0x89, 0x9C, 0x24, 0xC0, 0x00, 0x00, 0x00,
 
+		0x48, 0xB9, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // mov rcx, this
 		0x48, 0xB8, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, // mov rax, pDetour
 		0xFF, 0xD0, // call rax
 
@@ -372,7 +374,8 @@ PVOID TextHook::CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalS
 		return nullptr;
 
 	RtlCopyMemory(pCallDetour, assembly, sizeof(assembly));
-	*(PVOID*)(&pCallDetour[98]) = pDetour;
+	*(PVOID*)(&pCallDetour[98]) = pThis;
+	*(PVOID*)(&pCallDetour[108]) = pDetour;
 
 	ULONG newInstructionsSize = CopyInstruction(pCallDetour + sizeof(assembly), pEpilogue, count);
 

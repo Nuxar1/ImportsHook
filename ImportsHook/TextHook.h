@@ -38,10 +38,11 @@ class TextHook
 	PVOID m_pCallDetour;
 	PVOID m_pJmpToCallDetour;
 
-	UNICODE_STRING m_szFunctionName;
 
 	bool m_bEnabled;
 public:
+	UNICODE_STRING m_szFunctionName;
+
 	TextHook(UNICODE_STRING szFunctionName, PVOID pTarget, PVOID pDetour);
 	TextHook(UNICODE_STRING szFunctionName, PVOID pDetour);
 	~TextHook();
@@ -66,5 +67,5 @@ private:
 	// After that it jumps back to the original function (pOriginal+orignalSize-1).
 	// The -1 is because rax needs to be poped after the jmp. (See CreateCallDetour)
 	// Has to be freed with ExFreePool.
-	static PVOID CreateCallDetour(PVOID pDetour, PVOID pOriginal, ULONG originalSize, Instruction* pEpilogue, ULONG count);
+	static PVOID CreateCallDetour(PVOID pThis, PVOID pDetour, PVOID pOriginal, ULONG originalSize, Instruction* pEpilogue, ULONG count);
 };
